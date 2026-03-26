@@ -71,6 +71,7 @@ import android.support.v4.media.session.PlaybackStateCompat
 import android.support.v4.media.MediaMetadataCompat
 import android.util.Log
 import android.view.Surface
+import android.view.SurfaceView
 import androidx.lifecycle.Observer
 
 
@@ -142,6 +143,8 @@ import java.lang.IllegalStateException
 import java.util.*
 import kotlin.math.max
 import kotlin.math.min
+import android.content.pm.PackageManager
+import androidx.media3.exoplayer.DefaultRenderersFactory
 
 internal class RiverPlayer(
     context: Context,
@@ -179,13 +182,29 @@ internal class RiverPlayer(
             this.customDefaultLoadControl.bufferForPlaybackAfterRebufferMs
         )
         loadControl = loadBuilder.build()
+
+        // Enable decoder fallback for broader codec compatibility
+        val renderersFactory = DefaultRenderersFactory(context)
+            .setEnableDecoderFallback(true)
+
+        // Detect Android TV and enable tunneled playback
+        val isTV = context.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+        if (isTV) {
+            trackSelector.setParameters(
+                trackSelector.buildUponParameters()
+                    .setTunnelingEnabled(true)
+                    .build()
+            )
+        }
+
         exoPlayer = ExoPlayer.Builder(context)
+            .setRenderersFactory(renderersFactory)
             .setTrackSelector(trackSelector)
             .setLoadControl(loadControl)
             .build()
         workManager = WorkManager.getInstance(context)
         workerObserverMap = HashMap()
-        setupVideoPlayer(eventChannel, textureEntry, result)
+        setupVideoPlayer(context, eventChannel, textureEntry, result)
     }
 
     fun setDataSource(
@@ -509,6 +528,7 @@ internal class RiverPlayer(
     }
 
     private fun setupVideoPlayer(
+        context: Context,
         eventChannel: EventChannel, textureEntry: SurfaceTextureEntry, result: MethodChannel.Result
     ) {
         eventChannel.setStreamHandler(
@@ -521,8 +541,14 @@ internal class RiverPlayer(
                     eventSink.setDelegate(null)
                 }
             })
-        surface = Surface(textureEntry.surfaceTexture())
-        exoPlayer?.setVideoSurface(surface)
+
+        // On Android TV (Shield), skip SurfaceTexture — it doesn't render on Tegra GPU.
+        // The PlatformView (SurfaceView) will be attached later via setSurfaceView().
+        val isTV = context.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+        if (!isTV) {
+            surface = Surface(textureEntry.surfaceTexture())
+            exoPlayer?.setVideoSurface(surface)
+        }
         setAudioAttributes(exoPlayer, true)
         exoPlayer?.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
@@ -803,13 +829,15 @@ internal class RiverPlayer(
             */
 
 
-            exoPlayer?.trackSelectionParameters = TrackSelectionParameters.Builder().addOverride(
-                TrackSelectionOverride(
-                    mappedTrackInfo.getTrackGroups(
-                        rendererIndex
-                    ).get(groupIndex), groupElementIndex
-                )
-            ).build()
+            exoPlayer?.trackSelectionParameters = exoPlayer!!.trackSelectionParameters.buildUpon()
+                .clearOverrides()
+                .addOverride(
+                    TrackSelectionOverride(
+                        mappedTrackInfo.getTrackGroups(
+                            rendererIndex
+                        ).get(groupIndex), groupElementIndex
+                    )
+                ).build()
         }
     }
 
@@ -823,6 +851,17 @@ internal class RiverPlayer(
 
     fun setMixWithOthers(mixWithOthers: Boolean) {
         setAudioAttributes(exoPlayer, mixWithOthers)
+    }
+
+    /**
+     * Switch video output from SurfaceTexture to a native SurfaceView.
+     * Called by the PlatformView on Android TV where SurfaceTexture doesn't render.
+     * ExoPlayer manages the SurfaceView's surface lifecycle automatically.
+     */
+    fun setSurfaceView(surfaceView: SurfaceView) {
+        surface?.release()
+        surface = null
+        exoPlayer?.setVideoSurfaceView(surfaceView)
     }
 
     fun dispose() {

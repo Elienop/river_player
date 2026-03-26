@@ -60,6 +60,14 @@ class RiverPlayerPlugin : FlutterPlugin, ActivityAware, MethodCallHandler {
             binding.textureRegistry
         )
         flutterState?.startListening(this)
+
+        // Register PlatformView factory for SurfaceView-based video rendering.
+        // This bypasses Flutter's SurfaceTexture pipeline which fails on
+        // Nvidia Shield (Tegra GPU can't composite SurfaceTexture into Flutter).
+        binding.platformViewRegistry.registerViewFactory(
+            "river_player_surface_view",
+            RiverPlayerViewFactory { textureId -> videoPlayers[textureId] }
+        )
     }
 
 

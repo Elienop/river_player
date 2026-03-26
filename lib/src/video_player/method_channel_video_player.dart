@@ -4,6 +4,8 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:river_player/src/configuration/better_player_buffering_configuration.dart';
@@ -429,9 +431,35 @@ class MethodChannelVideoPlayer extends VideoPlayerPlatform {
         creationParamsCodec: const StandardMessageCodec(),
         creationParams: {'textureId': textureId!},
       );
-    } else {
-      return Texture(textureId: textureId!);
+    } else if (defaultTargetPlatform == TargetPlatform.android) {
+      // Use PlatformView with SurfaceView for native video rendering.
+      // This bypasses Flutter's SurfaceTexture GPU pipeline which fails
+      // on Nvidia Shield (Tegra GPU). Hybrid Composition ensures the
+      // SurfaceView renders on a separate hardware overlay plane.
+      return PlatformViewLink(
+        viewType: 'river_player_surface_view',
+        surfaceFactory: (context, controller) {
+          return AndroidViewSurface(
+            controller: controller as AndroidViewController,
+            gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
+            hitTestBehavior: PlatformViewHitTestBehavior.transparent,
+          );
+        },
+        onCreatePlatformView: (params) {
+          return PlatformViewsService.initSurfaceAndroidView(
+            id: params.id,
+            viewType: 'river_player_surface_view',
+            layoutDirection: TextDirection.ltr,
+            creationParams: {'textureId': textureId},
+            creationParamsCodec: const StandardMessageCodec(),
+            onFocus: () => params.onFocusChanged(true),
+          )
+            ..addOnPlatformViewCreatedListener(params.onPlatformViewCreated)
+            ..create();
+        },
+      );
     }
+    return Texture(textureId: textureId!);
   }
 
   EventChannel _eventChannelFor(int? textureId) {
